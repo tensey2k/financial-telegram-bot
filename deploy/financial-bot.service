@@ -1,0 +1,28 @@
+[Unit]
+Description=Personal Financial & Global Intelligence Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=financebot
+Group=financebot
+WorkingDirectory=/opt/financial-telegram-bot
+Environment="PATH=/opt/financial-telegram-bot/venv/bin:/usr/bin"
+EnvironmentFile=/opt/financial-telegram-bot/.env
+ExecStart=/opt/financial-telegram-bot/venv/bin/python -m main
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=financial-bot
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/financial-telegram-bot/state
+
+[Install]
+WantedBy=multi-user.target

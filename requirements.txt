@@ -1,0 +1,40 @@
+# Personal Financial & Global Intelligence Telegram Bot
+# Target: Python 3.12+, Ubuntu Server, Oracle Cloud Always Free Tier VPS
+#
+# Hard policy for this file:
+#   - no database driver (no sqlite/postgres/mysql/redis packages)
+#   - no AI/LLM package (no openai, anthropic, langchain, tiktoken, numpy/scipy stack)
+#   - no web framework (no fastapi/flask/uvicorn/gunicorn)
+#   - no container or orchestration tooling
+# Every entry below is a runtime dependency actually imported by the bot.
+#
+# Versions are expressed as compatible-release ranges rather than exact pins so
+# that pip resolves the current patch releases on install day. The ranges are
+# deliberately closed before the next major rewrite of each library.
+
+# --- Telegram interface (async-native, wraps httpx internally) ---
+python-telegram-bot>=21.6,<23
+
+# --- Async HTTP: connection pooling, timeouts, conditional requests ---
+httpx>=0.27,<0.30
+
+# --- RSS/Atom parsing for the news aggregator ---
+feedparser>=6.0.11,<7
+
+# --- 07:00 America/Toronto daily delivery, DST-aware ---
+# 3.x is the stable line; APScheduler 4.x is a breaking API rewrite.
+APScheduler>=3.10.4,<4
+
+# --- Configuration: .env schema, strict validation, response models ---
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+python-dotenv>=1.0.1,<2
+
+# --- IANA timezone database for zoneinfo("America/Toronto") ---
+# Ubuntu ships /usr/share/zoneinfo, but a minimal image or a stripped
+# sysroot would otherwise fail at runtime with ZoneInfoNotFoundError.
+tzdata>=2024.1
+
+# --- Not listed here on purpose ---
+# pytest / pytest-asyncio are development-only. They arrive with the test
+# suite as a separate requirements-dev.txt so the VPS install stays lean.
