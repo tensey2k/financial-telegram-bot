@@ -1,285 +1,309 @@
-# Financial Intelligence Telegram Bot
+# Financial Telegram Bot
 
-A Python-based financial intelligence and market-monitoring platform that gathers information from multiple financial data sources, processes it, and delivers consolidated financial briefings through Telegram and email.
+A Python-based financial briefing application that generates financial intelligence reports, delivers brief confirmations through Telegram, and sends the full briefing by email using Brevo.
 
-The project is designed to bring different areas of the financial markets together in one automated reporting workflow, covering equities, cryptocurrencies, bonds, foreign exchange, macroeconomic indicators, financial news, and additional data sources.
-
-The application supports both scheduled and manually requested briefings, with Telegram notifications and detailed email delivery through Brevo.
+This repository contains the application deployed on an Ubuntu VPS and managed through `systemd`.
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#project-overview)
-2. [Key Features](#key-features)
-3. [Supported Data Categories](#supported-data-categories)
-4. [How the Application Works](#how-the-application-works)
-5. [Project Architecture](#project-architecture)
-6. [Technology Stack](#technology-stack)
-7. [Prerequisites](#prerequisites)
-8. [Installation](#installation)
-9. [Configuration](#configuration)
-10. [Telegram Bot Usage](#telegram-bot-usage)
-11. [Financial Briefing Workflow](#financial-briefing-workflow)
-12. [Email Delivery](#email-delivery)
-13. [Automated Scheduling](#automated-scheduling)
-14. [Running the Application](#running-the-application)
-15. [Production Deployment with systemd](#production-deployment-with-systemd)
-16. [Testing](#testing)
-17. [Troubleshooting](#troubleshooting)
-18. [Security and Best Practices](#security-and-best-practices)
-19. [Development and Maintenance](#development-and-maintenance)
+1. [Project Overview](#1-project-overview)
+2. [Features](#2-features)
+3. [Project Architecture](#3-project-architecture)
+4. [Technology Stack](#4-technology-stack)
+5. [Prerequisites](#5-prerequisites)
+6. [Deployment Overview](#6-deployment-overview)
+7. [Step 1 — Prepare the VPS](#step-1--prepare-the-vps)
+8. [Step 2 — Clone the Repository](#step-2--clone-the-repository)
+9. [Step 3 — Create the Python Environment](#step-3--create-the-python-environment)
+10. [Step 4 — Configure Environment Variables](#step-4--configure-environment-variables)
+11. [Step 5 — Configure the systemd Service](#step-5--configure-the-systemd-service)
+12. [Step 6 — Start and Verify the Application](#step-6--start-and-verify-the-application)
+13. [Telegram Commands](#13-telegram-commands)
+14. [Financial Briefing Workflow](#14-financial-briefing-workflow)
+15. [Email Delivery and Error Handling](#15-email-delivery-and-error-handling)
+16. [Automated Scheduling](#16-automated-scheduling)
+17. [Updating the Application](#17-updating-the-application)
+18. [Running the Tests](#18-running-the-tests)
+19. [Logs and Monitoring](#19-logs-and-monitoring)
+20. [Troubleshooting](#20-troubleshooting)
+21. [Security](#21-security)
+22. [Backup and Recovery](#22-backup-and-recovery)
 
 ---
 
-## Project Overview
+## 1. Project Overview
 
-Financial Intelligence Telegram Bot is an automated financial information aggregation and reporting application.
+The Financial Telegram Bot is designed to automate the generation and distribution of financial briefings.
 
-Rather than relying on a single source of financial information, the application separates data collection into dedicated modules. Each module handles a particular category of information and makes its results available to the briefing-generation workflow.
+The application runs continuously on an Ubuntu VPS. Telegram provides the user interface for interacting with the bot, while email is used to deliver the complete financial briefing.
 
-The application then processes the collected information and generates a consolidated financial briefing.
+The project separates briefing generation, email delivery, Telegram interaction, and scheduling into dedicated modules.
 
-The delivery architecture separates two purposes:
+### Deployment information
 
-- **Telegram:** Provides access to the bot and concise notifications about briefing generation and email delivery.
-- **Email:** Delivers the complete financial briefing in a structured format.
+| Component | Configuration |
+|---|---|
+| Operating system | Ubuntu Linux |
+| VPS user | `ubuntu` |
+| Application directory | `/opt/financial-telegram-bot` |
+| Python environment | `venv` |
+| Application entry point | `main.py` |
+| Process manager | systemd |
+| systemd service | `financial-bot` |
+| Application interface | Telegram |
+| Email provider | Brevo |
+| Application timezone | `America/Toronto` |
+| Source control | Git |
+| Repository | `tensey2k/financial-telegram-bot` |
 
-This separation keeps Telegram notifications concise while allowing the detailed report to be delivered through email.
+---
 
-The application can operate continuously on a Linux server, with systemd managing the production process and an integrated scheduler handling automated briefing generation.
+## 2. Features
 
-## Key Features
+### Financial briefing generation
 
-### Multi-source financial information
+The application generates a financial briefing using its dedicated briefing-generation module.
 
-The application organizes financial information into dedicated data-source modules, making it easier to maintain and extend individual market categories.
-
-### Consolidated financial briefings
-
-Information from enabled data sources is assembled into a single financial report rather than requiring users to consult multiple individual sources.
+The generation logic is separated from the Telegram interface and email delivery components.
 
 ### Telegram integration
 
-Telegram provides the user-facing interface for interacting with the application and requesting manual briefings.
+Telegram is the application's interaction interface.
 
-### Email reporting through Brevo
+The `/briefing` command triggers the briefing workflow and provides a short status confirmation to the user.
 
-The application supports email delivery through Brevo, allowing the complete financial briefing to be delivered separately from Telegram notifications.
+### Email delivery
 
-### Manual briefing generation
+The complete financial briefing is delivered by email through Brevo.
 
-Users can request a briefing directly through Telegram using `/briefing`.
+The email remains the primary delivery channel for the full report.
 
-### Automated daily scheduling
+### Delivery status handling
 
-The scheduler supports automatic briefing generation and delivery without requiring a manual request.
+The briefing workflow distinguishes between several possible outcomes:
 
-### Modular architecture
+- Successful email delivery.
+- Email delivery disabled because Brevo is unavailable or disabled.
+- Email delivery returning an unsuccessful result.
+- An exception occurring during email delivery.
+- An error occurring while generating the briefing.
 
-Data collection, briefing generation, email delivery, scheduling, configuration, and Telegram command handling are separated into dedicated modules.
+Telegram provides an appropriate status or warning rather than reporting a successful delivery when the email was not sent.
 
-### Automated testing
+### Automated execution
 
-The project includes tests covering formatting, data calculations, scheduling, email behavior, and manual briefing delivery.
+The application includes a scheduler module for automated tasks.
 
----
+The scheduler is integrated into the application rather than requiring the user to manually launch the briefing each time.
 
-## Supported Data Categories
+### Process supervision
 
-The application contains dedicated modules for the following information categories:
-
-| Category | Module | Purpose |
-|---|---|---|
-| Bonds | `data_sources/bonds.py` | Bond-market information |
-| Cryptocurrencies | `data_sources/crypto.py` | Cryptocurrency market information |
-| Economic indicators | `data_sources/economic.py` | Macroeconomic data and calculations |
-| Foreign exchange | `data_sources/forex.py` | Currency-market information |
-| Financial news | `data_sources/news.py` | Financial and economic news |
-| Equities | `data_sources/stocks.py` | Stock-market information |
-| Weather | `data_sources/weather.py` | Weather information |
-
-The common data-source functionality is located in `data_sources/base.py`.
-
-The application is structured to keep individual data-source implementations separate from the briefing-generation and delivery logic.
+The application runs as a systemd service, allowing it to start automatically with the VPS and be monitored through standard Linux service-management commands.
 
 ---
 
-## How the Application Works
+## 3. Project Architecture
 
-The application follows a modular processing workflow.
+The application uses a modular Python structure.
 
-```text
-                 FINANCIAL DATA SOURCES
-                           |
-          +----------------+----------------+
-          |                |                |
-        Stocks           Crypto           Bonds
-          |                |                |
-        Forex           Economic           News
-          |                |                |
-        Weather        Other Sources        |
-          +----------------+----------------+
-                           |
-                           v
-                  DATA COLLECTION
-                           |
-                           v
-                 BRIEFING GENERATION
-                           |
-                           v
-                  FORMATTING PROCESS
-                           |
-                +----------+----------+
-                |                     |
-                v                     v
-             TELEGRAM                EMAIL
-          Short status              Full report
-                                    via Brevo
-```
+The following components have been identified in the deployed project:
 
-### Processing stages
-
-**1. Data collection**
-
-The application retrieves information through its enabled data-source modules.
-
-**2. Data processing**
-
-Collected information is processed and prepared for inclusion in the financial briefing.
-
-**3. Briefing generation**
-
-The briefing generator combines the available information into a consolidated report.
-
-**4. Formatting**
-
-The report is formatted for its intended delivery channel.
-
-Telegram and email have separate presentation requirements.
-
-**5. Delivery**
-
-The complete report is delivered through email when email delivery is enabled and successful.
-
-Telegram provides a concise confirmation or an appropriate warning when delivery cannot be completed.
-
----
-
-## Project Architecture
-
-The repository is organized by application responsibility.
-
-```text
-financial-telegram-bot/
-│
-├── briefing/
-│   ├── __init__.py
-│   ├── generator.py
-│   └── mailer.py
-│
-├── data_sources/
-│   ├── base.py
-│   ├── bonds.py
-│   ├── crypto.py
-│   ├── economic.py
-│   ├── forex.py
-│   ├── news.py
-│   ├── stocks.py
-│   └── weather.py
-│
-├── scheduler/
-│   └── daily.py
-│
-├── telegram_bot/
-│   └── commands.py
-│
-├── tests/
-│   └── test_briefing.py
-│
-├── config.py
-├── main.py
-├── .gitignore
-└── README.md
-```
-
-### Main application files
-
-| File | Responsibility |
+| File or directory | Responsibility |
 |---|---|
-| `main.py` | Application entry point and initialization |
-| `config.py` | Central application configuration |
-| `briefing/generator.py` | Data aggregation, briefing generation, and formatting |
+| `main.py` | Main application entry point |
+| `briefing/` | Financial briefing functionality |
+| `briefing/generator.py` | Briefing generation and formatting |
 | `briefing/mailer.py` | Email delivery functionality |
-| `scheduler/daily.py` | Automated briefing scheduling |
-| `telegram_bot/commands.py` | Telegram command handlers |
-| `data_sources/base.py` | Shared data-source functionality |
-| `tests/test_briefing.py` | Automated application tests |
+| `scheduler/` | Automated scheduling functionality |
+| `scheduler/daily.py` | Daily scheduler component |
+| `tests/` | Automated tests |
+| `tests/test_briefing.py` | Briefing workflow tests |
+| `.gitignore` | Excludes local environments, caches, logs, and environment files |
+| `.env` | Local environment configuration; not committed to Git |
 
-### Architecture principles
-
-The project follows several important design principles:
-
-- Separation of concerns between data collection and report generation.
-- Independent modules for different financial data categories.
-- Centralized application configuration.
-- Separate formatting and delivery responsibilities.
-- Reusable briefing-generation functionality.
-- Automated testing for critical workflows.
-
-This structure makes it easier to introduce additional data sources or modify existing functionality without unnecessarily changing unrelated application components.
+The repository may contain additional modules for Telegram commands, financial data retrieval, configuration, and supporting utilities. Consult the actual repository tree when modifying or extending the architecture.
 
 ---
 
-## Technology Stack
+## 4. Technology Stack
 
-The project is built primarily with Python and integrates the following technologies:
+The confirmed technologies and services include:
 
-| Technology | Role |
-|---|---|
-| Python | Main application language |
-| Telegram Bot API | User interaction and notifications |
-| Brevo | Email delivery |
-| systemd | Linux production process management |
-| Python unittest | Automated testing |
-| Git | Version control |
-| GitHub | Source-code repository |
+- **Python** — application language.
+- **Telegram Bot API** — user interaction.
+- **Brevo** — email delivery.
+- **systemd** — process management and automatic startup.
+- **Git and GitHub** — source control and version management.
+- **Ubuntu** — VPS operating system.
+- **Python unittest** — automated testing.
 
-The application also relies on the external data providers configured for its individual data-source modules.
+The exact Python version and third-party package versions should be taken from the deployment environment and dependency manifest.
 
 ---
 
-## Prerequisites
+## 5. Prerequisites
 
-Before installing the application, ensure that the deployment environment has:
+Before deploying the application, prepare the following:
 
-- Linux or another supported Python environment.
-- Python 3.12 or later.
+### VPS
+
+- An Ubuntu VPS.
+- SSH access.
+- A user with permission to install packages and manage the application service.
+- An available application directory under `/opt`.
+
+### External services
+
+The application requires the credentials and configuration associated with the integrations enabled in its source code.
+
+These may include:
+
+- Telegram bot configuration.
+- Financial data-source credentials, where applicable.
+- Brevo email configuration.
+- Email recipient and sender settings.
+
+Use the variable names defined by the application's configuration code. Do not assume that example names from another deployment apply to this project.
+
+### Local computer
+
+You will need:
+
 - Git.
-- Access to the required financial data providers.
-- A Telegram bot and its API credentials.
-- Brevo account credentials if email delivery is required.
-- Internet connectivity.
-
-For production deployment, a Linux VPS with systemd is recommended.
+- An SSH client.
+- Access to the GitHub repository.
+- A way to edit files on the VPS.
 
 ---
 
-## Installation
+## 6. Deployment Overview
 
-### Step 1 — Clone the repository
+A new deployment follows this general sequence:
+
+1. Prepare the Ubuntu VPS.
+2. Install Python and Git.
+3. Clone the GitHub repository.
+4. Create a Python virtual environment.
+5. Install the project's dependencies.
+6. Configure the environment variables.
+7. Configure the systemd service.
+8. Start the application.
+9. Verify that the service and Telegram bot are operational.
+10. Check the application logs.
+
+The application is deployed under:
 
 ```bash
-git clone https://github.com/tensey2k/financial-telegram-bot.git
+/opt/financial-telegram-bot
 ```
 
-Navigate into the project directory:
+The Python virtual environment is located at:
 
 ```bash
-cd financial-telegram-bot
+/opt/financial-telegram-bot/venv
 ```
 
-### Step 2 — Create a Python virtual environment
+---
+
+## Step 1 — Prepare the VPS
+
+Connect to the VPS over SSH:
+
+```bash
+ssh ubuntu@YOUR_SERVER_IP
+```
+
+Update the package index:
+
+```bash
+sudo apt update
+```
+
+Upgrade installed packages:
+
+```bash
+sudo apt upgrade -y
+```
+
+Install Git, Python, and the virtual-environment support package:
+
+```bash
+sudo apt install -y git python3 python3-venv python3-pip
+```
+
+Check the installed versions:
+
+```bash
+python3 --version
+```
+
+```bash
+git --version
+```
+
+Confirm that the commands return valid version information before continuing.
+
+---
+
+## Step 2 — Clone the Repository
+
+Create the application directory:
+
+```bash
+sudo mkdir -p /opt/financial-telegram-bot
+```
+
+Assign ownership to the deployment user:
+
+```bash
+sudo chown -R ubuntu:ubuntu /opt/financial-telegram-bot
+```
+
+Move into the application directory:
+
+```bash
+cd /opt/financial-telegram-bot
+```
+
+Clone the repository:
+
+```bash
+git clone https://github.com/tensey2k/financial-telegram-bot.git .
+```
+
+If GitHub requires authentication for the repository, authenticate using an appropriate Git credential method. Do not place a personal access token directly in a command that may be saved in shell history.
+
+Verify the cloned repository:
+
+```bash
+git status
+```
+
+Check the current branch:
+
+```bash
+git branch --show-current
+```
+
+The production branch is:
+
+```text
+main
+```
+
+---
+
+## Step 3 — Create the Python Environment
+
+Move into the project directory:
+
+```bash
+cd /opt/financial-telegram-bot
+```
+
+Create the virtual environment:
 
 ```bash
 python3 -m venv venv
@@ -291,244 +315,401 @@ Activate it:
 source venv/bin/activate
 ```
 
-### Step 3 — Install project dependencies
+Upgrade pip:
 
-Install the dependencies defined by the project's dependency manifest.
+```bash
+python -m pip install --upgrade pip
+```
 
-If the repository includes `requirements.txt`:
+### Install project dependencies
+
+Use the dependency manifest actually maintained by the repository.
+
+If the project contains `requirements.txt`:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If dependencies are managed through another manifest, use the corresponding installation method.
+If dependencies are managed through another manifest, use the installation procedure specified by that manifest.
 
-### Step 4 — Configure environment variables
-
-Create a local `.env` file in the project root if required by the application's configuration.
-
-The required variables and their expected names must match the configuration implemented in `config.py`.
-
-Do not copy credentials from another deployment or commit a populated `.env` file.
-
-### Step 5 — Verify the configuration
-
-Before starting the application, verify that:
-
-- Required Telegram configuration is present.
-- Required financial data-provider credentials are configured.
-- Email configuration is correct if email delivery is enabled.
-- Optional data sources are configured according to their requirements.
-
-### Step 6 — Start the application
+Verify the Python environment:
 
 ```bash
-python main.py
+which python
 ```
 
-For production, use the systemd deployment instructions below.
-
----
-
-## Configuration
-
-Application configuration is centralized in:
+The returned path should point to:
 
 ```text
-config.py
+/opt/financial-telegram-bot/venv/bin/python
 ```
 
-Sensitive configuration should be supplied through environment variables rather than hardcoded directly into the source code.
-
-### Configuration categories
-
-| Configuration category | Purpose |
-|---|---|
-| Telegram | Bot authentication and Telegram integration |
-| Financial data providers | Access to enabled financial information sources |
-| Email | Brevo email-delivery configuration |
-| Briefing | Report-generation settings |
-| Scheduler | Automated briefing scheduling |
-| Application | General runtime configuration |
-
-The exact variable names, required values, and defaults should be taken from the current implementation of `config.py`.
-
-### Environment configuration recommendations
-
-- Keep credentials in the local `.env` file or the production environment.
-- Never commit `.env` to GitHub.
-- Keep development and production credentials separate.
-- Rotate credentials if they have been exposed.
-- Avoid printing sensitive environment variables in application logs.
+This ensures that the application uses its own isolated Python environment rather than the system-wide Python installation.
 
 ---
 
-## Telegram Bot Usage
+## Step 4 — Configure Environment Variables
 
-The Telegram bot provides the interface for requesting and receiving briefing-related notifications.
+The application uses a local `.env` file for environment-specific configuration.
 
-### Manual financial briefing
+The `.env` file must remain on the VPS and must not be committed to GitHub.
 
-To request a briefing, send:
+### Create the configuration file
 
-```text
-/briefing
-```
-
-The application then executes the manual briefing workflow.
-
-### Expected workflow
-
-1. Telegram receives the `/briefing` command.
-2. The application initiates briefing generation.
-3. Enabled data sources are collected and processed.
-4. The complete briefing is generated.
-5. The application attempts to send the report through email.
-6. Telegram receives a concise status notification.
-
-The Telegram response is intentionally kept short because the complete report is intended to be delivered by email.
-
----
-
-## Financial Briefing Workflow
-
-The manual and scheduled briefing workflows use the briefing-generation functionality.
-
-The main implementation is located in:
-
-```text
-briefing/generator.py
-```
-
-### Manual briefing behavior
-
-The manual `/briefing` command generates the report and attempts email delivery.
-
-The expected behavior is:
-
-| Situation | Telegram behavior | Email behavior |
-|---|---|---|
-| Briefing generated and email sent | Success confirmation | Complete report delivered |
-| Email delivery disabled | Warning that email delivery is disabled | No delivery attempt |
-| Email provider reports failure | Delivery failure notification | Report not confirmed as delivered |
-| Email delivery raises an exception | Error notification | Delivery unsuccessful |
-| Briefing generation fails | Generation failure notification | No report delivery |
-
-The application does not send a preliminary Telegram message announcing that the briefing is being built.
-
-### Important delivery principle
-
-A successful briefing-generation process does not automatically mean that the email was successfully delivered.
-
-The application distinguishes between report generation and email delivery so that Telegram notifications accurately reflect the delivery outcome.
-
----
-
-## Email Delivery
-
-Email functionality is implemented separately in:
-
-```text
-briefing/mailer.py
-```
-
-Brevo is used as the email delivery provider.
-
-### Email responsibilities
-
-The mailer handles the email-delivery operation separately from the briefing-generation process.
-
-This separation makes it possible to test email behavior independently and handle delivery failures without confusing them with report-generation failures.
-
-### Email and Telegram have different purposes
-
-| Channel | Purpose |
-|---|---|
-| Email | Complete financial briefing |
-| Telegram | Manual command interface and concise status notifications |
-
-The detailed email presentation is kept separate from the shorter Telegram presentation.
-
-### Email delivery failure handling
-
-The manual briefing workflow accounts for:
-
-- Email delivery being disabled.
-- A delivery function returning an unsuccessful result.
-- An exception occurring during email delivery.
-- A failure occurring before email delivery because briefing generation did not complete.
-
-No successful delivery should be reported unless the email-delivery operation confirms success.
-
----
-
-## Automated Scheduling
-
-Automated scheduling is implemented in:
-
-```text
-scheduler/daily.py
-```
-
-The scheduler is part of the application startup workflow.
-
-Its purpose is to execute the configured daily briefing process automatically.
-
-### Scheduled workflow
-
-1. The application starts.
-2. The scheduler is initialized.
-3. The configured briefing schedule is registered.
-4. The scheduled task runs at its configured time.
-5. Financial data is collected and processed.
-6. The briefing is generated.
-7. The scheduled delivery workflow executes.
-
-The manual and scheduled workflows are designed to reuse briefing-generation functionality rather than maintaining separate implementations of the report itself.
-
----
-
-## Running the Application
-
-### Development mode
-
-Activate the virtual environment:
+From the project directory:
 
 ```bash
-source venv/bin/activate
+nano .env
 ```
 
-Start the application:
+Add the environment variables required by the application's configuration module.
+
+The exact variable names and required values must match the configuration code in the repository.
+
+Typical configuration categories include:
+
+- Telegram bot credentials and settings.
+- Financial data-provider credentials, where required.
+- Brevo API configuration.
+- Email sender information.
+- Email recipient information.
+- Application-specific settings.
+
+Save the file and exit the editor.
+
+### Important security check
+
+The repository's `.gitignore` excludes `.env` and other environment-specific files.
+
+Verify that Git ignores the file:
 
 ```bash
-python main.py
+git check-ignore .env
 ```
 
-### Stop the application
+The command should identify `.env` as an ignored file.
 
-Use:
-
-```text
-Ctrl + C
-```
-
-when running interactively.
-
-### Production mode
-
-For a production server, use systemd to manage the application process.
+Never commit API keys, bot tokens, passwords, or other credentials.
 
 ---
 
-## Production Deployment with systemd
+## Step 5 — Configure the systemd Service
 
-The production deployment uses the following service:
+The application is managed by the systemd service:
 
 ```text
 financial-bot
 ```
 
-systemd provides process supervision and allows the application to run independently of an interactive SSH session.
+The service is responsible for running the application in the background and managing its lifecycle.
+
+### Inspect the existing service configuration
+
+On an already deployed VPS, inspect the active unit:
+
+```bash
+sudo systemctl cat financial-bot
+```
+
+Check the unit-file location:
+
+```bash
+systemctl show -p FragmentPath --value financial-bot
+```
+
+The service configuration should use:
+
+- The application directory as its working directory.
+- The project's virtual-environment Python interpreter.
+- The application's actual entry point.
+- The local environment configuration.
+- A restart policy appropriate for a continuously running application.
+
+### Example systemd configuration
+
+For a fresh deployment, the following is a template based on the known deployment paths and entry point. Confirm the actual Python startup command and configuration-loading behavior in the source code before using it.
+
+```ini
+[Unit]
+Description=Financial Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/financial-telegram-bot
+EnvironmentFile=/opt/financial-telegram-bot/.env
+ExecStart=/opt/financial-telegram-bot/venv/bin/python /opt/financial-telegram-bot/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+If creating or changing the unit file, use the path returned by `systemctl show` or the path selected for the new deployment.
+
+After saving a new or modified unit file, reload systemd:
+
+```bash
+sudo systemctl daemon-reload
+```
+
+Enable automatic startup:
+
+```bash
+sudo systemctl enable financial-bot
+```
+
+---
+
+## Step 6 — Start and Verify the Application
+
+Start the service:
+
+```bash
+sudo systemctl start financial-bot
+```
+
+Check its status:
+
+```bash
+sudo systemctl status financial-bot
+```
+
+The expected healthy state is:
+
+```text
+Active: active (running)
+```
+
+Check the recent application logs:
+
+```bash
+sudo journalctl -u financial-bot -n 100 --no-pager
+```
+
+Follow the logs live:
+
+```bash
+sudo journalctl -u financial-bot -f
+```
+
+Once the service is running, verify the Telegram integration using the commands supported by the application.
+
+Confirm that:
+
+- The bot responds.
+- The `/briefing` workflow can be triggered.
+- The briefing generation completes.
+- Email delivery reports the correct outcome.
+- No unexpected exceptions appear in the logs.
+
+---
+
+## 13. Telegram Commands
+
+The confirmed briefing command is:
+
+### `/briefing`
+
+Triggers the financial briefing workflow.
+
+The workflow generates the report and attempts to deliver the complete briefing through the configured email provider.
+
+Telegram receives a concise status confirmation or an appropriate warning based on the result.
+
+Other Telegram commands should be documented here once their exact command names and behavior have been verified against the Telegram command implementation.
+
+---
+
+## 14. Financial Briefing Workflow
+
+The briefing workflow separates report generation from delivery.
+
+At a high level:
+
+1. A briefing request is received.
+2. The application generates the financial briefing.
+3. The email-delivery component attempts to send the complete report.
+4. The workflow evaluates the delivery result.
+5. Telegram receives the corresponding status message.
+
+This separation prevents the Telegram interface from treating report generation and successful email delivery as the same operation.
+
+The full report is delivered through email; Telegram provides the short operational confirmation.
+
+---
+
+## 15. Email Delivery and Error Handling
+
+Email delivery is handled by:
+
+```text
+briefing/mailer.py
+```
+
+The briefing workflow accounts for the following situations:
+
+| Situation | Expected behavior |
+|---|---|
+| Email sent successfully | Telegram confirms successful delivery |
+| Brevo disabled | Warning indicates that email delivery is disabled; briefing is not reported as sent |
+| Email operation returns failure | Telegram reports the delivery failure |
+| Email operation raises an exception | Telegram reports an email-delivery error |
+| Briefing generation fails | Telegram reports a generation failure |
+
+The application should never report successful email delivery when the email provider has not confirmed success.
+
+### Important design principle
+
+The Telegram status message is separate from the email content.
+
+Changes to Telegram confirmation messages should not unintentionally modify the email subject, HTML body, text body, formatting, or delivery call.
+
+---
+
+## 16. Automated Scheduling
+
+Automated scheduling is handled through the scheduler components, including:
+
+```text
+scheduler/daily.py
+```
+
+The scheduler is integrated into the application lifecycle.
+
+The application timezone is:
+
+```text
+America/Toronto
+```
+
+When modifying scheduled tasks, verify:
+
+- The configured execution time.
+- The timezone used by the scheduler.
+- Whether the task runs once or repeatedly.
+- Whether a previous execution is still active.
+- Whether errors are recorded in the application logs.
+
+Do not assume that the VPS operating-system timezone and the application's scheduler timezone are identical.
+
+---
+
+## 17. Updating the Application
+
+The following procedure updates an existing deployment from the GitHub `main` branch.
+
+### Step 1 — Connect to the VPS
+
+```bash
+ssh ubuntu@YOUR_SERVER_IP
+```
+
+### Step 2 — Navigate to the project
+
+```bash
+cd /opt/financial-telegram-bot
+```
+
+### Step 3 — Check the working tree
+
+```bash
+git status
+```
+
+Resolve or preserve any local changes before pulling updates. Do not overwrite uncommitted production changes unintentionally.
+
+### Step 4 — Retrieve the latest code
+
+```bash
+git pull origin main
+```
+
+### Step 5 — Update dependencies
+
+If the dependency manifest has changed and the project uses `requirements.txt`:
+
+```bash
+./venv/bin/pip install -r requirements.txt
+```
+
+Otherwise, follow the repository's dependency-management procedure.
+
+### Step 6 — Run the tests
+
+```bash
+./venv/bin/python -m unittest discover -s tests -v
+```
+
+Do not deploy a change that introduces failing tests without first investigating the failure.
+
+### Step 7 — Restart the service
+
+Once the code and tests have been checked:
+
+```bash
+sudo systemctl restart financial-bot
+```
+
+### Step 8 — Verify the service
+
+```bash
+sudo systemctl status financial-bot
+```
+
+### Step 9 — Review the logs
+
+```bash
+sudo journalctl -u financial-bot -n 100 --no-pager
+```
+
+### Step 10 — Perform a Telegram verification
+
+Trigger the relevant Telegram workflow and verify that the application behaves as expected.
+
+---
+
+## 18. Running the Tests
+
+The project includes automated tests.
+
+Run the test suite from the application directory:
+
+```bash
+cd /opt/financial-telegram-bot
+```
+
+```bash
+./venv/bin/python -m unittest discover -s tests -v
+```
+
+The briefing-related test suite has previously completed successfully with:
+
+```text
+Ran 18 tests
+OK
+```
+
+The tests cover the briefing workflow and its delivery outcomes.
+
+Run the tests after modifying:
+
+- Briefing generation.
+- Email delivery.
+- Telegram status handling.
+- Error handling.
+- Other components covered by the test suite.
+
+A successful test run does not replace verification of the live Telegram and email integrations.
+
+---
+
+## 19. Logs and Monitoring
+
+The application is managed through systemd, so its standard output and error logs can be inspected through the system journal.
 
 ### Check service status
 
@@ -536,318 +717,221 @@ systemd provides process supervision and allows the application to run independe
 sudo systemctl status financial-bot
 ```
 
-### Start the service
+### Display the latest 100 log entries
 
 ```bash
-sudo systemctl start financial-bot
+sudo journalctl -u financial-bot -n 100 --no-pager
 ```
 
-### Stop the service
+### Follow logs in real time
 
 ```bash
-sudo systemctl stop financial-bot
+sudo journalctl -u financial-bot -f
 ```
 
-### Restart the service
+### Display logs from the current boot
+
+```bash
+sudo journalctl -u financial-bot -b --no-pager
+```
+
+### Restart the application
 
 ```bash
 sudo systemctl restart financial-bot
 ```
 
-### Enable startup at boot
+### Stop the application
 
 ```bash
-sudo systemctl enable financial-bot
+sudo systemctl stop financial-bot
 ```
 
-### View recent logs
+### Start the application
 
 ```bash
-sudo journalctl -u financial-bot -n 100 --no-pager
+sudo systemctl start financial-bot
 ```
 
-### Follow live logs
+### Check whether automatic startup is enabled
 
 ```bash
-sudo journalctl -u financial-bot -f
+sudo systemctl is-enabled financial-bot
 ```
-
-### Production deployment checklist
-
-Before considering a deployment complete:
-
-- Confirm the correct Python virtual environment is used.
-- Confirm the application configuration is available to the service.
-- Confirm the service starts without errors.
-- Confirm the Telegram bot initializes successfully.
-- Confirm the scheduler initializes.
-- Review the application logs.
-- Verify the manual briefing workflow when appropriate.
 
 ---
 
-## Testing
+## 20. Troubleshooting
 
-Automated tests are located in:
+### Service fails to start
 
-```text
-tests/test_briefing.py
-```
-
-The project uses Python's built-in `unittest` framework.
-
-### Run the complete test suite
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-If the virtual environment is used:
-
-```bash
-./venv/bin/python -m unittest discover -s tests -v
-```
-
-### Current test coverage
-
-The existing test suite covers several important application behaviors.
-
-| Test area | Coverage |
-|---|---|
-| Telegram formatting | Message length and formatting |
-| HTML formatting | Escaping untrusted headline content |
-| Telegram news formatting | Escaping dynamic text while preserving URLs |
-| Article formatting | Keeping news articles together across message boundaries |
-| URL validation | Restricting links to absolute HTTPS URLs |
-| Data collection | Avoiding duplicate source fetching |
-| Scheduler | Scheduled briefing behavior |
-| Email delivery | Disabled email configuration |
-| Email failure handling | Exceptions and unsuccessful delivery results |
-| Manual briefing | Generation, email delivery, and Telegram confirmation |
-| Economic calculations | Correct comparison periods and missing-data handling |
-| Presentation | Different presentation requirements for email and Telegram |
-
-The latest verified test run during development completed successfully:
-
-```text
-Ran 18 tests
-OK
-```
-
-All 18 tests passed.
-
-This result reflects the test suite at the time of that run; rerun the tests after subsequent code changes.
-
----
-
-## Troubleshooting
-
-### The Telegram bot does not start
-
-Check the systemd service:
+Check the service status:
 
 ```bash
 sudo systemctl status financial-bot
 ```
 
-Review the logs:
+Inspect the logs:
 
 ```bash
 sudo journalctl -u financial-bot -n 100 --no-pager
 ```
 
-Check that the required configuration and dependencies are available.
+Check that:
 
-### The `/briefing` command does not complete
+- The application directory exists.
+- The virtual environment exists.
+- The Python entry point is correct.
+- The systemd unit uses the correct paths.
+- Required environment variables are configured.
+- The service user has permission to access the project files.
 
-Review the application logs and determine whether the problem occurred during:
+### Python dependency errors
 
-- Data collection.
-- Briefing generation.
-- Formatting.
-- Email delivery.
+Check the virtual-environment interpreter:
 
-These are separate stages and should be investigated independently.
+```bash
+/opt/financial-telegram-bot/venv/bin/python --version
+```
 
-### Email delivery is disabled
+Check installed packages:
 
-Check the Brevo-related configuration and confirm that email delivery is enabled.
+```bash
+/opt/financial-telegram-bot/venv/bin/pip list
+```
 
-The manual briefing workflow is designed to notify Telegram when email delivery is disabled rather than falsely reporting that the report was sent.
+If a required dependency is missing, install it through the project's dependency manifest.
 
-### Email delivery fails
+### Telegram bot does not respond
 
-Check:
+Check the service logs:
 
-- Brevo configuration.
-- API credentials.
-- Email provider response.
-- Application logs.
+```bash
+sudo journalctl -u financial-bot -n 100 --no-pager
+```
 
-Telegram should report the delivery failure.
+Verify that the Telegram configuration is present and that the application can reach the Telegram API.
 
-### Scheduled briefings do not run
+Do not publish bot tokens or credentials when reporting the issue.
 
-Check:
+### Email is not delivered
+
+Inspect the application logs and verify:
+
+- Brevo is enabled.
+- The required Brevo configuration is present.
+- Sender and recipient settings are valid.
+- The application reports a successful delivery result.
+
+A generated briefing does not necessarily mean that an email was successfully delivered.
+
+### Application stops unexpectedly
+
+Check the service status and recent logs:
 
 ```bash
 sudo systemctl status financial-bot
 ```
 
-Then inspect the logs:
-
 ```bash
-sudo journalctl -u financial-bot -f
+sudo journalctl -u financial-bot -n 200 --no-pager
 ```
 
-Confirm that scheduler initialization completed successfully and review the configured schedule.
-
-### Tests fail
-
-Run:
-
-```bash
-./venv/bin/python -m unittest discover -s tests -v
-```
-
-Use the individual failure messages to identify the affected component.
+Look for Python exceptions, configuration errors, dependency problems, or external-service failures.
 
 ---
 
-## Security and Best Practices
+## 21. Security
 
-Security is particularly important because the application integrates multiple external services.
+The application uses credentials to communicate with external services. Protect those credentials.
 
-### Protect credentials
+### Environment files
 
-Never commit:
+The local `.env` file is excluded from Git.
 
-- Telegram bot tokens.
-- Brevo API credentials.
-- Financial data-provider API keys.
-- Passwords.
-- Private configuration files.
-- Other authentication secrets.
+Never:
 
-The `.env` file is excluded through `.gitignore`.
+- Commit `.env`.
+- Publish API keys or Telegram bot tokens.
+- Include credentials in screenshots or logs.
+- Paste secret values into support requests.
+- Store personal access tokens directly in shell commands.
 
-### Git practices
+### Git security
 
-Before committing changes:
+The repository includes ignore rules for:
 
-```bash
-git status
-```
+- `.env` and environment-specific files.
+- Python virtual environments.
+- Python bytecode and cache directories.
+- Test and tooling caches.
+- Log files.
 
-Review the changes:
+### Git history
 
-```bash
-git diff
-```
+Removing a secret file from the latest commit does not automatically remove it from earlier Git history.
 
-Check for whitespace errors:
-
-```bash
-git diff --check
-```
-
-Run the test suite before committing:
-
-```bash
-./venv/bin/python -m unittest discover -s tests -v
-```
-
-### Production practices
-
-- Keep the VPS operating system and Python environment maintained.
-- Restrict access to sensitive configuration files.
-- Monitor systemd logs.
-- Keep backups of important configuration.
-- Avoid exposing credentials in error messages.
-- Test application changes before deploying them.
+If credentials were ever committed or exposed, rotate the affected credentials with their respective providers.
 
 ---
 
-## Development and Maintenance
+## 22. Backup and Recovery
 
-The modular architecture allows individual parts of the application to be maintained independently.
+A deployment backup should preserve the information needed to restore the application without exposing credentials.
 
-### Adding a new data source
+At minimum, maintain secure copies of:
 
-A typical extension should:
+- The Git repository and its committed source code.
+- The production environment configuration.
+- Any required application data or state stored outside Git.
+- The systemd unit configuration.
+- Any deployment-specific configuration not stored in the repository.
 
-1. Identify the new financial information category.
-2. Create a dedicated module under `data_sources/`.
-3. Reuse shared functionality from `data_sources/base.py` where appropriate.
-4. Implement the data retrieval and processing logic.
-5. Integrate the source into the briefing-generation workflow.
-6. Handle unavailable or incomplete data appropriately.
-7. Add automated tests.
-8. Verify both Telegram and email presentation where applicable.
+Keep backups in a secure location separate from the VPS.
 
-### Modifying briefing formatting
+Do not commit production environment files or credentials to GitHub.
 
-Briefing generation and formatting are primarily handled in:
+### Basic recovery sequence
 
-```text
-briefing/generator.py
-```
+1. Provision a new Ubuntu VPS.
+2. Install Git and the required Python version.
+3. Clone the repository.
+4. Recreate the virtual environment.
+5. Install dependencies.
+6. Restore the environment configuration securely.
+7. Restore the systemd unit.
+8. Enable and start the service.
+9. Verify the application logs.
+10. Test the Telegram workflow and email delivery.
 
-Changes should preserve the distinct presentation requirements of email and Telegram.
+---
 
-In particular, Telegram messages must respect platform message-length limits and safely format dynamic content.
+## Maintenance Checklist
 
-### Modifying email delivery
+For routine maintenance:
 
-Email-delivery changes belong in:
-
-```text
-briefing/mailer.py
-```
-
-The email-delivery workflow should remain separate from report generation.
-
-### Modifying Telegram commands
-
-Telegram command handlers are located in:
-
-```text
-telegram_bot/commands.py
-```
-
-### Modifying scheduled tasks
-
-Scheduled briefing behavior is located in:
-
-```text
-scheduler/daily.py
-```
-
-### General development workflow
-
-1. Review the existing implementation.
-2. Make a focused change.
-3. Run the automated tests.
-4. Review the Git diff.
-5. Check that no credentials or generated files are staged.
-6. Commit the changes.
-7. Deploy the updated application.
-8. Verify the application and review its logs.
+- [ ] Check the systemd service status.
+- [ ] Review application logs for unexpected errors.
+- [ ] Verify that the Telegram bot responds.
+- [ ] Verify that briefing generation completes.
+- [ ] Confirm email delivery behavior.
+- [ ] Review automated scheduler execution.
+- [ ] Keep dependencies up to date.
+- [ ] Run automated tests after code changes.
+- [ ] Keep `.env` out of Git.
+- [ ] Maintain secure backups.
 
 ---
 
 ## Repository
 
-**GitHub:**  
-https://github.com/tensey2k/financial-telegram-bot
+**GitHub:** https://github.com/tensey2k/financial-telegram-bot
 
----
+**Production directory:** `/opt/financial-telegram-bot`
 
-## Project Philosophy
+**Production service:** `financial-bot`
 
-The goal of this project is to make financial information easier to collect, consolidate, and review through an automated reporting workflow.
+**Application entry point:** `main.py`
 
-By separating data sources, briefing generation, scheduling, and delivery, the application provides a modular foundation that can evolve as additional financial information sources and reporting capabilities are introduced.
+**Python environment:** `venv`
 
-**Financial Intelligence Telegram Bot**  
-*One consolidated workflow for financial market information and automated briefings.*
