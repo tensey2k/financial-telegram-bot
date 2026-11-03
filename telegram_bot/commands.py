@@ -12,6 +12,7 @@ silence the bot.
 from __future__ import annotations
 
 import logging
+import asyncio
 from datetime import datetime, timezone
 
 from telegram import Update
@@ -21,10 +22,11 @@ from telegram.ext import ContextTypes
 from config import Settings, load_settings
 from data_sources.base import DataUnavailable, get_client
 from data_sources import bonds, crypto, economic, forex, news, oil, stocks, weather
-from telegram_bot.authorization import authorized
+from telegram_bot.authorization import is_authorized, reject_unauthorized
 from telegram_bot.formatter import (
     format_bp,
     format_number,
+    format_percent,
     format_pct,
     format_quote_line,
     format_unavailable,
@@ -37,6 +39,17 @@ log = logging.getLogger(__name__)
 def _settings(ctx: ContextTypes.DEFAULT_TYPE) -> Settings:
     return ctx.bot_data["settings"]
 
+def authorized(func):
+    async def wrapper(update, ctx, *args, **kwargs):
+        settings = _settings(ctx)
+
+        if not is_authorized(update, settings):
+            await reject_unauthorized(update)
+            return None
+
+        return await func(update, ctx, *args, **kwargs)
+
+    return wrapper
 
 @authorized
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -51,39 +64,68 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "*Commands*\n"
-        "/briefing - full daily intelligence report\n"
-        "/oil - Brent and WTI crude\n"
-        "/crypto - BTC, ETH, SOL\n"
-        "/stocks - major global indices\n"
-        "/bonds - US yield curve and 2s10s spread\n"
-        "/forex - CAD crosses and ECB reference\n"
-        "/canada - Canadian economic indicators\n"
-        "/us - US economic indicators\n"
-        "/morocco - Moroccan economic indicators\n"
-        "/europe - European economic indicators\n"
-        "/weather - local forecast and alerts\n"
-        "/news - regional headlines\n"
-        "/status - API availability and cache state\n"
-        "/settings - current configuration",
+        "/briefing - comprehensive daily financial intelligence briefing\n"
+        "/oil - Brent and WTI crude oil prices and daily performance\n"
+        "/crypto - Bitcoin, Ethereum, Solana and Monero market prices\n"
+        "/stocks - major global indices and ETF performance\n"
+        "/bonds - US and Canadian government yields and yield spreads\n"
+        "/forex - CAD currency pairs and ECB reference exchange rates\n"
+        "/canada - Canadian economic data and monetary policy\n"
+        "/us - US economic data, inflation and employment\n"
+        "/morocco - Moroccan economic indicators and monetary policy\n"
+        "/europe - European economic data, inflation and growth\n"
+        "/weather - local weather forecasts and active alerts\n"
+        "/news - regional and international headlines\n"
+        "/status - data-source availability and cache information\n"
+        "/settings - current bot configuration",
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
 @authorized
 async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    from briefing.generator import build_briefing
+    from briefing.generator import (
+        build_briefing_data,
+        format_briefing_html,
+        format_briefing_text,
+    )
+    from briefing.mailer import send_briefing_email
 
     settings = _settings(ctx)
-    await update.message.reply_text("Building briefing...")
+
     try:
-        chunks = await build_briefing(settings)
+        data = await build_briefing_data(settings)
     except Exception as exc:
         log.exception("Briefing generation failed")
         await update.message.reply_text(f"Briefing failed: {exc}")
         return
-    for chunk in chunks:
+
+    if not settings.brevo_enabled:
         await update.message.reply_text(
-            chunk, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
+            "Email delivery is disabled. The briefing was not sent."
+        )
+        return
+
+    try:
+        generated = data["generated_at"].strftime("%Y-%m-%d")
+        sent = await send_briefing_email(
+            settings,
+            f"Daily Financial Intelligence — {generated}",
+            format_briefing_html(data),
+            format_briefing_text(data),
+        )
+        if sent:
+            await update.message.reply_text(
+                "📧 Your full daily financial briefing has been sent to your email."
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ The briefing email could not be sent."
+            )
+    except Exception:
+        log.exception("Manual briefing email delivery failed")
+        await update.message.reply_text(
+            "⚠️ An error occurred while sending the briefing email."
         )
 
 
@@ -108,14 +150,15 @@ async def cmd_crypto(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = _settings(ctx)
     data = await crypto.get_crypto_quotes(settings.coingecko_api_key)
     lines = ["*Crypto*"]
-    for sym in ("BTC", "ETH", "SOL"):
+    for sym in ("BTC", "ETH", "SOL", "XMR"):
         quote = data.get(sym)
         if isinstance(quote, DataUnavailable):
             lines.append(f"  {sym}: {format_unavailable(quote)}")
         else:
             lines.append(
                 f"  {sym}: ${format_number(quote.price)} "
-                f"({format_pct(quote.change_24h_pct)})"
+                f"({format_pct(quote.change_24h_pct)}) "
+                f"[{quote.freshness.label}]"
             )
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
@@ -123,130 +166,341 @@ async def cmd_crypto(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 @authorized
 async def cmd_stocks(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = _settings(ctx)
-    data = await stocks.get_indices(settings.finnhub_api_key)
-    lines = ["*Global Indices*"]
-    for name, idx in data.items():
+    indices = await stocks.get_indices(settings.finnhub_api_key)
+    etfs = await stocks.get_etfs()
+
+    lines = ["*GLOBAL INDICES*"]
+    for name, idx in indices.items():
+        country = stocks.INDEX_COUNTRIES.get(name, "")
+        display_name = f"{name} ({country})" if country else name
+
         if isinstance(idx, DataUnavailable):
-            lines.append(f"  {name}: {format_unavailable(idx)}")
+            lines.append(f"  {display_name}: {format_unavailable(idx)}")
         else:
             lines.append(
-                f"  {name}: {format_number(idx.value)} "
+                f"  {display_name}: {format_number(idx.price)} "
                 f"({format_pct(idx.change_pct)}) [{idx.freshness.label}]"
             )
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    def append_etf_section(title: str, tickers: tuple[str, ...]) -> None:
+        lines.extend(["", f"*{title}*"])
+        for ticker in tickers:
+            quote = etfs.get(ticker)
+            name = stocks.ETFS[ticker]
+
+            if quote is None or isinstance(quote, DataUnavailable):
+                lines.append(
+                    f"  `{ticker}` | {name}: "
+                    f"{format_unavailable(quote)}"
+                )
+            else:
+                lines.append(
+                    f"  `{ticker}` | {name}: "
+                    f"{quote.currency} {format_number(quote.price)} "
+                    f"({format_pct(quote.change_pct)}) "
+                    f"[{quote.freshness.label}]"
+                )
+
+    append_etf_section(
+        "PERSONAL PORTFOLIO",
+        ("XEQT", "VFV", "VCN", "VDY", "HXQ"),
+    )
+    append_etf_section(
+        "ETF WATCHLIST",
+        ("VEQT", "XGRO", "XBB", "XIU", "XRE", "XEC", "XEF", "VGRO"),
+    )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 @authorized
 async def cmd_bonds(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = _settings(ctx)
-    data = await bonds.get_all(settings.fred_api_key)
-    lines = ["*US Yield Curve*"]
-    curve = data.get("us_curve", {})
-    for tenor in ("3m", "2y", "10y", "30y"):
-        y = curve.get(tenor)
-        if isinstance(y, DataUnavailable):
-            lines.append(f"  {tenor.upper()}: {format_unavailable(y)}")
-        else:
-            lines.append(f"  {tenor.upper()}: {format_number(y.value, 3)}%")
-    spread = data.get("spread")
-    if isinstance(spread, bonds.CurveSpread):
-        lines.append(
-            f"  2s10s spread: {format_number(spread.spread_bps, 1)} bps "
-            f"({spread.signal})"
-        )
-    elif isinstance(spread, DataUnavailable):
-        lines.append(f"  2s10s: {format_unavailable(spread)}")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    data = await bonds.get_all(settings.fred_key)
 
+    curves = [
+        (
+            "US Treasury Yield Curve",
+            data.get("us_curve", {}),
+            ("2Y", "3Y", "5Y", "7Y", "10Y"),
+            "spread",
+            "US",
+        ),
+        (
+            "Canada Government Bond Yield Curve",
+            data.get("canada_curve", {}),
+            ("2Y", "3Y", "5Y", "7Y", "10Y"),
+            "canada_spread",
+            "Canada",
+        ),
+    ]
+
+    lines = []
+
+    for title, curve, tenors, spread_key, country in curves:
+        lines.append(f"*{title}*")
+
+        for tenor in tenors:
+            y = curve.get(tenor) if isinstance(curve, dict) else None
+
+            if y is None:
+                lines.append(f"  {tenor}: Unavailable")
+            elif isinstance(y, DataUnavailable):
+                lines.append(f"  {tenor}: {format_unavailable(y)}")
+            elif isinstance(y, bonds.YieldPoint):
+                lines.append(
+                    f"  {tenor}: {format_number(y.rate, 3)}%"
+                )
+            else:
+                lines.append(f"  {tenor}: Unavailable")
+
+        spread = data.get(spread_key)
+
+        if isinstance(spread, bonds.CurveSpread):
+            lines.append(
+                f"  2s10s spread: {format_number(spread.spread_bps, 1)} bps "
+                f"({spread.signal})"
+            )
+        elif isinstance(spread, DataUnavailable):
+            lines.append(
+                f"  2s10s spread: {format_unavailable(spread)}"
+            )
+
+        lines.append("")
+
+    await update.message.reply_text(
+        "\n".join(lines).rstrip(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 @authorized
 async def cmd_forex(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    data = await forex.get_forex()
-    lines = ["*FX (CAD crosses)*"]
-    crosses = data.get("cad_crosses", {})
-    for pair in ("EUR/CAD", "GBP/CAD", "CAD/USD"):
-        rate = crosses.get(pair)
+    settings = _settings(ctx)
+    data = await forex.get_forex(settings.fxapi_key)
+    rates = data.get("rates", {})
+
+    lines = ["*FOREIGN EXCHANGE*"]
+
+    for pair in forex.PAIR_ORDER:
+        rate = rates.get(pair)
+
         if isinstance(rate, DataUnavailable):
             lines.append(f"  {pair}: {format_unavailable(rate)}")
-        else:
-            lines.append(f"  {pair}: {format_number(rate.rate, 4)} [{rate.freshness.label}]")
-    problems = data.get("discrepancies", [])
-    if problems:
-        lines.append(f"  _ECB cross-check mismatch: {', '.join(problems)}_")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        elif rate is not None:
+            change = (
+                format_percent(rate.change_pct)
+                if rate.change_pct is not None else "N/A"
+            )
+            lines.append(
+                f"  {pair}: {format_number(rate.rate, 4)} "
+                f"({change}) [{rate.freshness.label}]"
+            )
+
+    last_updated = data.get("last_updated")
+    if last_updated:
+        lines.append(
+            f"\n_Last updated: {last_updated.strftime('%Y-%m-%d %H:%M UTC')}_"
+        )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 @authorized
 async def cmd_economic(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    region = ctx.matches[0].group(1) if ctx.matches else "canada"
+    command = update.message.text.split()[0].split("@")[0].lstrip("/").lower()
+    region = {
+        "canada": "CA",
+        "us": "US",
+        "morocco": "MA",
+        "europe": "EU",
+    }.get(command, command.upper())
     settings = _settings(ctx)
-    data = await economic.get_region(settings.fred_api_key, region)
-    lines = [f"*{region.title()} indicators*"]
+    data = await economic.get_region(settings.fred_key, region)
+    display_region = economic.REGION_NAMES.get(region, region.title())
+    lines = [f"*{display_region} Economic Indicators*"]
     if not data:
         lines.append("  No indicators configured for this region.")
     for label, ind in data.items():
         if isinstance(ind, DataUnavailable):
-            lines.append(f"  {label}: {format_unavailable(ind)}")
+            lines.append(f"• {label}: {format_unavailable(ind)}")
         else:
-            change = f" ({ind.change})" if ind.change else ""
-            lines.append(f"  {label}: {ind.value}{ind.unit} {change}")
+            value = f"{ind.value:g}{ind.unit}"
+            change = (
+                f" | Change: {ind.change:+.3f} {ind.change_label}"
+                if ind.change is not None and ind.change_label
+                else ""
+            )
+            date = ind.as_of.strftime("%Y-%m-%d") if ind.as_of else "date n/a"
+            freshness = ind.freshness.value.upper()
+            lines.append(
+                f"• {label}: {value}{change}\n"
+                f"  {freshness} · {date}"
+            )
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
 @authorized
 async def cmd_weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = _settings(ctx)
-    report = await weather.get_weather(settings)
-    if isinstance(report, DataUnavailable):
-        await update.message.reply_text(f"Weather: {format_unavailable(report)}")
-        return
-    lines = [f"*{report.city} weather*"]
-    if report.current_temp is not None:
-        lines.append(f"  Now: {report.current_temp:.0f}°C, {report.condition}")
-    if report.forecast:
-        lines.append("  _Forecast:_")
+
+    locations = [
+        (
+            settings.weather_latitude,
+            settings.weather_longitude,
+            "Montreal, QC",
+            "Canada",
+            "auto",
+        ),
+        (34.0209, -6.8416, "Rabat", "Morocco", "GMT"),
+    ]
+
+    reports = await asyncio.gather(
+        *[
+            weather.get_weather(latitude, longitude, city, country, timezone_name)
+            for latitude, longitude, city, country, timezone_name in locations
+        ]
+    )
+
+    montreal_alerts = await weather.get_montreal_alerts()
+    sections = []
+
+    for report in reports:
+        if isinstance(report, DataUnavailable):
+            sections.append(f"*Weather unavailable*\n{format_unavailable(report)}")
+            continue
+
+        updated = (
+            report.as_of.strftime("%Y-%m-%d %H:%M %Z")
+            if report.as_of else "time unavailable"
+        )
+
+        lines = [
+            f"*Weather — {report.city}, {report.country}*",
+            (
+                f"Now: {report.current_temp:.0f}°C, {report.condition}"
+                if report.current_temp is not None
+                else f"Now: {report.condition}"
+            ),
+        ]
+
+        if report.wind_kmh is not None:
+            lines.append(f"Wind: {report.wind_kmh:.0f} km/h")
+
+        if report.high is not None and report.low is not None:
+            precip = (
+                f"{report.precipitation_prob}%"
+                if report.precipitation_prob is not None else "n/a"
+            )
+            lines.append(
+                f"Today: High {report.high:.0f}°C / Low {report.low:.0f}°C "
+                f"· Precipitation: {precip}"
+            )
+
+        lines.append("_3-day forecast:_")
         for day in report.forecast[:3]:
             lines.append(
-                f"    {day.date}: {day.temp_min:.0f}–{day.temp_max:.0f}°C "
-                f"{day.condition}"
+                f"• {day.date}: {day.high:.0f}–{day.low:.0f}°C, "
+                f"{weather._weather_code(day.code)}, "
+                f"{day.precipitation_prob}% precip."
             )
-    if report.alerts:
-        lines.append(f"  ⚠ {len(report.alerts)} active alert(s)")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
+        if report.city == "Montreal, QC":
+            if montreal_alerts.status == "UNAVAILABLE":
+                lines.append(
+                    "Official alerts: Status unavailable "
+                    "(Environment Canada feed error)."
+                )
+            else:
+                if montreal_alerts.status == "ACTIVE":
+                    lines.append("_Environment Canada alerts:_")
+                    for alert in montreal_alerts.alerts:
+                        lines.append(f"⚠️ {alert}")
+                else:
+                    lines.append(
+                        "Environment Canada: No active alerts listed "
+                        "in the feed. This does not confirm a current all-clear."
+                    )
+
+                alert_updated = (
+                    montreal_alerts.updated_at.strftime("%Y-%m-%d %H:%M UTC")
+                    if montreal_alerts.updated_at else "unknown"
+                )
+                lines.append(
+                    f"Alert feed checked: {montreal_alerts.freshness.value} "
+                    f"· Last content update: {alert_updated}"
+                )
+        else:
+            lines.append(
+                "Official alerts: Not yet integrated for Rabat."
+            )
+
+        lines.append(
+            f"_{report.freshness.value.upper()} · Updated {updated}_"
+        )
+        sections.append("\n".join(lines))
+
+    await update.message.reply_text(
+        "\n\n".join(sections),
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 @authorized
 async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     data = await news.get_news()
-    lines = ["*Headlines*"]
+    lines = ["*Business, Economics, Markets & Geopolitics*"]
+
     for region, items in data.items():
         if isinstance(items, DataUnavailable):
             lines.append(f"  {region}: {format_unavailable(items)}")
             continue
+
         lines.append(f"\n_{region}_")
+
         for item in items[:5]:
-            lines.append(f"  • [{item.title}]({item.link}) - {item.source}")
+            published = (
+                item.published.strftime("%Y-%m-%d %H:%M UTC")
+                if item.published else "Time unavailable"
+            )
+            lines.append(
+                f"  • [{item.title}]({item.link}) — {item.source}\n"
+                f"    Published: {published} | "
+                f"Article: {item.freshness.value} | "
+                f"Feed: {item.fetch_freshness.value}"
+            )
+
     await update.message.reply_text(
-        "\n".join(lines), parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True,
     )
 
 
 @authorized
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     client = get_client()
-    stats = client.cache_stats()
+    stats = await client.cache_stats()
     lines = [
         "*Status*",
         f"  Cache entries: {stats['entries']}",
-        f"  Hit rate: {format_pct(stats['hit_rate_pct'])}",
+        f"  Cache hits / misses: {stats['hits']} / {stats['misses']}",
+        f"  Cache hit rate: {format_pct(stats['hit_rate_pct'])}",
+        f"  Network requests: {stats['network_attempts']}",
+        f"  Network successes / failures: {stats['network_successes']} / {stats['network_failures']}",
         f"  Uptime: {stats['uptime_seconds']:.0f}s",
     ]
     settings = _settings(ctx)
     keys = {
-        "FRED": bool(settings.fred_api_key),
+        "FRED": bool(settings.fred_key),
         "CoinGecko": bool(settings.coingecko_api_key),
         "Finnhub": bool(settings.finnhub_api_key),
         "Alpha Vantage": bool(settings.alpha_vantage_api_key),
+        "FXAPI": bool(settings.fxapi_api_key),
     }
     lines.append("  _API keys:_")
     for name, present in keys.items():
@@ -260,7 +514,7 @@ async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [
         "*Configuration*",
         f"  Timezone: {s.timezone}",
-        f"  Delivery: {s.delivery_time} {', '.join(s.delivery_days)}",
+        f"  Delivery: {s.delivery_time} {', '.join(('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')[day] for day in sorted(s.delivery_days))}",
         f"  City: {s.weather_city}",
         f"  Sections: oil={s.enable_oil}, crypto={s.enable_crypto}, "
         f"stocks={s.enable_stocks}, bonds={s.enable_bonds}, "
@@ -268,5 +522,8 @@ async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"news={s.enable_news}",
         f"  Regions: canada={s.enable_canada}, us={s.enable_us}, "
         f"morocco={s.enable_morocco}, europe={s.enable_europe}",
+        f"  Additional flags: rates={s.enable_rates}, "
+        f"economic={s.enable_economic}, calendar={s.enable_calendar}, "
+        f"ca_mortgage={s.enable_ca_mortgage}",
     ]
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("\n".join(lines))

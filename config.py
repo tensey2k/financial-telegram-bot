@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # --- Location ---
     weather_latitude: float = 45.5017
     weather_longitude: float = -73.5673
-    weather_city: str = "Montreal"
+    weather_city: str = "Montreal, QC"
     weather_country: str = "Canada"
 
     # --- Optional API keys ---
@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     coingecko_api_key: SecretStr = SecretStr("")
     finnhub_api_key: SecretStr = SecretStr("")
     alpha_vantage_api_key: SecretStr = SecretStr("")
+    fxapi_api_key: SecretStr = SecretStr("")
+    brevo_api_key: SecretStr = SecretStr("")
+    brevo_sender_email: str = "tensey2g@gmail.com"
+    brevo_recipient_email: str = "adilzahrir@gmail.com"
+    brevo_enabled: bool = False
 
     # --- Network ---
     request_timeout: int = Field(default=15, ge=1, le=120)
@@ -247,6 +252,8 @@ class Settings(BaseSettings):
         "coingecko_api_key",
         "finnhub_api_key",
         "alpha_vantage_api_key",
+        "fxapi_api_key",
+        "brevo_api_key",
         mode="before",
     )
     @classmethod
@@ -300,6 +307,10 @@ class Settings(BaseSettings):
     @property
     def alpha_vantage_key(self) -> str | None:
         return self.alpha_vantage_api_key.get_secret_value() or None
+
+    @property
+    def fxapi_key(self) -> str | None:
+        return self.fxapi_api_key.get_secret_value() or None
 
     @property
     def state_path(self) -> Path:

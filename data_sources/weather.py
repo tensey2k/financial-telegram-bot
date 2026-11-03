@@ -1,7 +1,7 @@
 """Weather for the configured city.
 
-Open-Meteo: free, no key, no rate limit, and it publishes alerts. That is
-the whole reason this is the primary source rather than a fallback.
+Open-Meteo provides current conditions and daily forecasts. Its standard
+forecast endpoint does not provide official Canadian weather alerts.
 
 Coordinates come from config, so the city is not hard-coded here: change
 WEATHER_LATITUDE/WEATHER_LONGITUDE in .env and the report moves.
@@ -13,19 +13,84 @@ generous for a 7-day outlook and keeps the 07:00 briefing fast.
 from __future__ import annotations
 
 import logging
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from data_sources.base import (
     DataUnavailable,
     Freshness,
     fetch_json,
+    fetch_text,
 )
 
 log = logging.getLogger(__name__)
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 WEATHER_TTL = 1800.0
+
+
+MONTREAL_ALERTS_URL = (
+    "https://weather.gc.ca/rss/battleboard/qcrm2_e.xml"
+)
+ALERTS_TTL = 300.0
+ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+
+
+@dataclass
+class AlertResult:
+    alerts: list[str]
+    status: str
+    updated_at: datetime | None
+    freshness: Freshness
+
+
+async def get_montreal_alerts() -> AlertResult:
+    """Fetch official Environment Canada alerts for Montréal Island."""
+    data, freshness = await fetch_text(
+        MONTREAL_ALERTS_URL,
+        cache_key="environment-canada:montreal-alerts",
+        ttl=ALERTS_TTL,
+    )
+
+    if isinstance(data, DataUnavailable):
+        return AlertResult([], "UNAVAILABLE", None, Freshness.UNAVAILABLE)
+
+    try:
+        root = ET.fromstring(data)
+
+        updated_text = root.findtext("atom:updated", namespaces=ATOM_NS)
+        updated_at = (
+            datetime.fromisoformat(updated_text.replace("Z", "+00:00"))
+            if updated_text else None
+        )
+
+        entries = root.findall("atom:entry", ATOM_NS)
+        alerts = []
+
+        for entry in entries:
+            title = entry.findtext("atom:title", default="", namespaces=ATOM_NS)
+            summary = entry.findtext(
+                "atom:summary", default="", namespaces=ATOM_NS
+            )
+            if "no alerts in effect" not in title.lower() and summary.strip():
+                alerts.append(f"{title}: {summary.strip()}")
+
+        if not entries:
+            return AlertResult(
+                [], "UNAVAILABLE", updated_at, Freshness.UNAVAILABLE
+            )
+
+        return AlertResult(
+            alerts,
+            "ACTIVE" if alerts else "NONE",
+            updated_at,
+            freshness,
+        )
+
+    except (ET.ParseError, ValueError, TypeError) as exc:
+        log.warning("Failed to parse Environment Canada alerts: %s", exc)
+        return AlertResult([], "UNAVAILABLE", None, Freshness.UNAVAILABLE)
 
 
 @dataclass
@@ -92,6 +157,7 @@ async def get_weather(
     longitude: float,
     city: str,
     country: str,
+    timezone_name: str = "auto",
 ) -> WeatherReport | DataUnavailable:
     data, freshness = await fetch_json(
         OPEN_METEO_URL,
@@ -99,10 +165,9 @@ async def get_weather(
             "latitude": latitude,
             "longitude": longitude,
             "current": "temperature_2m,weather_code,wind_speed_10m",
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-            "timezone": "auto",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code",
+            "timezone": timezone_name,
             "forecast_days": "7",
-            "alerts": "yes",
         },
         cache_key=f"weather:{city}",
         ttl=WEATHER_TTL,
@@ -117,6 +182,7 @@ async def get_weather(
         highs = daily.get("temperature_2m_max", [])
         lows = daily.get("temperature_2m_min", [])
         probs = daily.get("precipitation_probability_max", [])
+        codes = daily.get("weather_code", [])
 
         forecast = [
             DailyForecast(
@@ -124,17 +190,13 @@ async def get_weather(
                 high=float(highs[i]) if i < len(highs) else 0.0,
                 low=float(lows[i]) if i < len(lows) else 0.0,
                 precipitation_prob=int(probs[i]) if i < len(probs) else 0,
-                code=0,
+                code=int(codes[i]) if i < len(codes) else 0,
             )
             for i in range(len(dates))
         ]
 
-        alerts = []
-        raw_alerts = data.get("alerts", {}).get("alerts", [])
-        for alert in raw_alerts:
-            event = alert.get("event") or "Weather alert"
-            desc = alert.get("description") or ""
-            alerts.append(f"{event}: {desc}".strip())
+        # Official alerts require a separate government alert feed.
+        alerts: list[str] = []
 
         return WeatherReport(
             city=city,
@@ -147,7 +209,12 @@ async def get_weather(
             wind_kmh=float(current.get("wind_speed_10m")) if current.get("wind_speed_10m") is not None else None,
             alerts=alerts,
             forecast=forecast,
-            as_of=datetime.fromisoformat(current["time"]).replace(tzinfo=timezone.utc) if current.get("time") else None,
+            as_of=(
+                datetime.fromisoformat(current["time"]).replace(
+                    tzinfo=timezone(timedelta(seconds=int(data.get("utc_offset_seconds", 0))))
+                )
+                if current.get("time") else None
+            ),
             freshness=freshness,
         )
     except (KeyError, TypeError, ValueError) as exc:

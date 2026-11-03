@@ -32,11 +32,36 @@ INDICES = {
     "Euro Stoxx 50": "^STOXX50E",
     "CAC 40": "^FCHI",
     "FTSE 100": "^FTSE",
-    "DAX": "^GDAXI",
     "Nikkei 225": "^N225",
-    "Hang Seng": "^HSI",
     "Shanghai Composite": "000001.SS",
-    "ASX 200": "^AXJO",
+}
+
+INDEX_COUNTRIES = {
+    "S&P 500": "USA",
+    "NASDAQ": "USA",
+    "Dow Jones": "USA",
+    "TSX": "Canada",
+    "Euro Stoxx 50": "Eurozone",
+    "CAC 40": "France",
+    "FTSE 100": "UK",
+    "Nikkei 225": "Japan",
+    "Shanghai Composite": "China",
+}
+
+ETFS = {
+    "XEQT": "iShares Core Equity ETF Portfolio",
+    "VFV": "Vanguard S&P 500 Index ETF",
+    "VCN": "Vanguard FTSE Canada All Cap Index ETF",
+    "VDY": "Vanguard FTSE Canadian High Dividend Yield Index ETF",
+    "HXQ": "Global X NASDAQ-100 Index Corporate Class ETF",
+    "VEQT": "Vanguard All-Equity ETF Portfolio",
+    "XGRO": "iShares Core Growth ETF Portfolio",
+    "XBB": "iShares Core Canadian Universe Bond Index ETF",
+    "XIU": "iShares S&P/TSX 60 Index ETF",
+    "XRE": "iShares S&P/TSX Capped REIT Index ETF",
+    "XEC": "iShares Core MSCI Emerging Markets IMI Index ETF",
+    "XEF": "iShares Core MSCI EAFE IMI Index ETF",
+    "VGRO": "Vanguard Growth ETF Portfolio",
 }
 
 # Approximate UTC open/close hours per index exchange (24h clock).
@@ -121,7 +146,7 @@ async def _fetch_yahoo(symbol: str, name: str) -> StockIndex | DataUnavailable:
     index = _parse_chart(data, name, symbol)
     if index is None:
         return DataUnavailable(source=f"stocks:{symbol}", reason="Malformed response")
-    index.freshness = Freshness.CACHED if not _is_exchange_open(symbol) else freshness
+    index.freshness = freshness
     return index
 
 
@@ -169,6 +194,20 @@ async def get_indices(
     tasks = [_fetch_index(name, sym, api_key) for name, sym in pairs]
     raw = await asyncio.gather(*tasks)
     return {name: value for (name, _sym), value in zip(pairs, raw)}
+
+
+async def get_etfs() -> dict[str, StockIndex | DataUnavailable]:
+    """Fetch the selected Canadian-listed ETFs from Yahoo Finance."""
+    pairs = [
+        (ticker, f"{ticker}.TO", name)
+        for ticker, name in ETFS.items()
+    ]
+    tasks = [
+        _fetch_yahoo(symbol, f"{ticker} | {name}")
+        for ticker, symbol, name in pairs
+    ]
+    raw = await asyncio.gather(*tasks)
+    return {ticker: value for (ticker, _symbol, _name), value in zip(pairs, raw)}
 
 
 async def _fetch_index(name: str, symbol: str, api_key: str | None) -> StockIndex | DataUnavailable:

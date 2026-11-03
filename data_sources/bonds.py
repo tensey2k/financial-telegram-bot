@@ -34,40 +34,34 @@ log = logging.getLogger(__name__)
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FRED_OBSERVATIONS = "https://api.stlouisfed.org/fred/series/observations"
 
-# Tenor -> (Yahoo symbol, quoted_as_x10)
-US_YAHOO: dict[str, tuple[str, bool]] = {
-    "13W": ("^IRX", False),
-    "5Y": ("^FVX", True),
-    "10Y": ("^TNX", True),
-    "30Y": ("^TYX", True),
+BOC_BENCHMARK_URL = (
+    "https://www.bankofcanada.ca/valet/"
+    "observations/group/bond_yields_benchmark/json"
+)
+
+CA_SERIES = {
+    "2Y": "BD.CDN.2YR.DQ.YLD",
+    "3Y": "BD.CDN.3YR.DQ.YLD",
+    "5Y": "BD.CDN.5YR.DQ.YLD",
+    "7Y": "BD.CDN.7YR.DQ.YLD",
+    "10Y": "BD.CDN.10YR.DQ.YLD",
 }
 
+# Tenor -> (Yahoo symbol, quoted_as_x10)
+
 # Official constant-maturity series. Used to fill 2Y and to backstop Yahoo.
-US_FRED: dict[str, str] = {
+US_FRED = {
     "2Y": "DGS2",
+    "3Y": "DGS3",
     "5Y": "DGS5",
+    "7Y": "DGS7",
     "10Y": "DGS10",
-    "30Y": "DGS30",
 }
 
 # ISO country -> FRED OECD monthly long-term (10Y) rate series id.
 # Verified against the FRED browser before deploying; a wrong id returns
 # HTTP 400, which degrades to DataUnavailable rather than crashing.
-INTL_FRED: dict[str, str] = {
-    "CA": "IRLTST01CAM659N",
-    "GB": "IRLTST01GBM659N",
-    "DE": "IRLTST01GMM659N",
-    "FR": "IRLTST01FRM659N",
-    "JP": "IRLTST01JPM659N",
-}
-
-COUNTRY_NAMES = {
-    "CA": "Canada",
-    "GB": "United Kingdom",
-    "DE": "Germany",
-    "FR": "France",
-    "JP": "Japan",
-}
+# US and Canadian government bond yields.
 
 # Yields move in basis points over an hour; a 15-minute cache is plenty for
 # a 07:00 briefing and keeps every provider well inside its free limit.
@@ -183,7 +177,7 @@ async def _fred_yield(series_id: str, api_key: str, country: str, tenor: str) ->
             change_bp = None
 
     # Monthly series are stale by construction, not by fetch failure.
-    monthly = series_id.endswith("M6") or series_id.endswith("M6N")
+    monthly = series_id.endswith("M156N")
     return YieldPoint(
         tenor=tenor,
         country=country,
@@ -195,22 +189,104 @@ async def _fred_yield(series_id: str, api_key: str, country: str, tenor: str) ->
     )
 
 
-async def get_us_curve(fred_api_key: str | None = None) -> dict[str, YieldPoint | DataUnavailable]:
-    """Fetch the US curve. Yahoo first, FRED filling gaps when a key exists."""
-    out: dict[str, YieldPoint | DataUnavailable] = {}
+async def get_us_curve(
+    fred_api_key: str | None = None,
+) -> dict[str, YieldPoint | DataUnavailable]:
 
-    for tenor, (symbol, scaled) in US_YAHOO.items():
-        out[tenor] = await _yahoo_yield(tenor, symbol, scaled)
+    if not fred_api_key:
+        unavailable = DataUnavailable(
+            source="fred",
+            reason="No FRED_API_KEY configured",
+        )
+        return {tenor: unavailable for tenor in US_FRED}
 
-    if fred_api_key:
-        for tenor, series_id in US_FRED.items():
-            current = out.get(tenor)
-            if isinstance(current, YieldPoint):
-                continue
-            out[tenor] = await _fred_yield(series_id, fred_api_key, "US", tenor)
+    out = {}
+
+    for tenor, series_id in US_FRED.items():
+        out[tenor] = await _fred_yield(
+            series_id,
+            fred_api_key,
+            "US",
+            tenor,
+        )
 
     return out
 
+async def get_canada_curve() -> dict[str, YieldPoint | DataUnavailable]:
+    """Fetch Canadian benchmark yields from Bank of Canada Valet."""
+
+    data, freshness = await fetch_json(
+        BOC_BENCHMARK_URL,
+        params={"recent": "2"},
+        cache_key="bonds:canada:benchmark",
+        ttl=YIELD_TTL,
+    )
+
+    if isinstance(data, DataUnavailable):
+        return {
+            tenor: data
+            for tenor in ["2Y", "3Y", "5Y", "7Y", "10Y"]
+        }
+
+    rows = sorted(
+        data.get("observations", []),
+        key=lambda row: row.get("d", ""),
+        reverse=True,
+    )
+
+    out = {}
+
+    for tenor, series_id in CA_SERIES.items():
+        valid = []
+
+        for row in rows:
+            observation = row.get(series_id)
+
+            if not isinstance(observation, dict):
+                continue
+
+            value = observation.get("v")
+
+            if value in (None, "", "."):
+                continue
+
+            try:
+                valid.append((
+                    float(value),
+                    datetime.strptime(
+                        row["d"], "%Y-%m-%d"
+                    ).replace(tzinfo=timezone.utc),
+                ))
+            except (ValueError, KeyError, TypeError):
+                continue
+
+        if not valid:
+            out[tenor] = DataUnavailable(
+                source=f"bankofcanada:{series_id}",
+                reason="No observations available",
+            )
+            continue
+
+        rate, as_of = valid[0]
+
+        change_bp = None
+        if len(valid) > 1:
+            change_bp = round(
+                (valid[0][0] - valid[1][0]) * 100,
+                1,
+            )
+
+        out[tenor] = YieldPoint(
+            tenor=tenor,
+            country="CA",
+            rate=round(rate, 3),
+            change_bp=change_bp,
+            as_of=as_of,
+            source=f"bankofcanada:{series_id}",
+            freshness=freshness,
+        )
+
+    return out
 
 def compute_spread(curve: dict[str, YieldPoint | DataUnavailable]) -> CurveSpread | DataUnavailable:
     """2s10s in basis points, from whatever the curve fetch returned."""
@@ -238,31 +314,16 @@ def compute_spread(curve: dict[str, YieldPoint | DataUnavailable]) -> CurveSprea
     )
 
 
-async def get_international(fred_api_key: str | None) -> dict[str, YieldPoint | DataUnavailable]:
-    """10Y benchmarks for the countries the briefing tracks. FRED key required."""
-    if not fred_api_key:
-        unavailable = DataUnavailable(
-            source="fred", reason="No FRED_API_KEY configured"
-        )
-        return {c: unavailable for c in INTL_FRED}
-
-    out: dict[str, YieldPoint | DataUnavailable] = {}
-    for country, series_id in INTL_FRED.items():
-        out[country] = await _fred_yield(series_id, fred_api_key, country, "10Y")
-    return out
-
-
 async def get_all(
     fred_api_key: str | None = None,
 ) -> dict[str, object]:
-    """Everything the bonds section needs, in one call.
 
-    Keys: 'us_curve' (dict), 'spread' (CurveSpread), 'international' (dict).
-    """
     curve = await get_us_curve(fred_api_key)
-    intl = await get_international(fred_api_key)
+    canada = await get_canada_curve()
+
     return {
         "us_curve": curve,
+        "canada_curve": canada,
         "spread": compute_spread(curve),
-        "international": intl,
+        "canada_spread": compute_spread(canada),
     }

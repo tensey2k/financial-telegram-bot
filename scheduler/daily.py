@@ -1,50 +1,50 @@
 """Daily briefing scheduler.
 
-APScheduler runs a single CronTrigger job at the configured time in the
-configured timezone. The job builds the briefing and delivers it to every
-authorized user. It does not retry on failure - a failed delivery is logged
-and the next day's job runs on schedule.
-
-DST is handled by APScheduler through the ZoneInfo object: 09:00
-America/Toronto stays 09:00 America/Toronto whether the clock is EST or EDT.
+One scheduled job builds the briefing data once and sends it by email only.
+APScheduler handles the configured timezone.
 """
-
 from __future__ import annotations
 
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from telegram.constants import ParseMode
 from telegram.ext import Application
 
-from briefing.generator import build_briefing
+from briefing.generator import (
+    build_briefing_data,
+    format_briefing_html,
+    format_briefing_text,
+)
+from briefing.mailer import send_briefing_email
 from config import Settings
 
 log = logging.getLogger(__name__)
 
 
-async def _deliver_briefing(app: Application, settings: Settings) -> None:
+async def _deliver_briefing(app, settings: Settings) -> None:
+    """Build once and deliver the scheduled briefing by email only."""
     try:
-        chunks = await build_briefing(settings)
+        data = await build_briefing_data(settings)
     except Exception:
         log.exception("Scheduled briefing build failed")
         return
-    for user_id in settings.authorized_user_ids:
+
+    # No scheduled Telegram messages; manual /briefing remains unchanged.
+    if settings.brevo_enabled:
         try:
-            for chunk in chunks:
-                await app.bot.send_message(
-                    chat_id=user_id,
-                    text=chunk,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=True,
-                )
+            generated = data["generated_at"].strftime("%Y-%m-%d")
+            await send_briefing_email(
+                settings,
+                f"Daily Financial Intelligence — {generated}",
+                format_briefing_html(data),
+                format_briefing_text(data),
+            )
         except Exception:
-            log.exception("Failed to deliver briefing to user %s", user_id)
+            log.exception("Scheduled briefing email delivery failed")
 
 
 def build_scheduler(app: Application, settings: Settings) -> AsyncIOScheduler:
-    """Construct the scheduler with the daily job. Does not start it."""
     scheduler = AsyncIOScheduler(timezone=settings.zone)
     trigger = CronTrigger(
         hour=settings.delivery_time.hour,
@@ -60,12 +60,5 @@ def build_scheduler(app: Application, settings: Settings) -> AsyncIOScheduler:
         name="Daily intelligence briefing",
         misfire_grace_time=600,
         coalesce=True,
-    )
-    log.info(
-        "Scheduled daily briefing at %02d:%02d %s on %s",
-        settings.delivery_time.hour,
-        settings.delivery_time.minute,
-        settings.timezone,
-        ", ".join(settings.delivery_days),
     )
     return scheduler

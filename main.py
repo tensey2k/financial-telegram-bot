@@ -55,10 +55,10 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("stocks", cmd_stocks))
     app.add_handler(CommandHandler("bonds", cmd_bonds))
     app.add_handler(CommandHandler("forex", cmd_forex))
-    app.add_handler(CommandHandler("canada", cmd_economic, pattern=r"^canada$"))
-    app.add_handler(CommandHandler("us", cmd_economic, pattern=r"^us$"))
-    app.add_handler(CommandHandler("morocco", cmd_economic, pattern=r"^morocco$"))
-    app.add_handler(CommandHandler("europe", cmd_economic, pattern=r"^europe$"))
+    app.add_handler(CommandHandler("canada", cmd_economic))
+    app.add_handler(CommandHandler("us", cmd_economic))
+    app.add_handler(CommandHandler("morocco", cmd_economic))
+    app.add_handler(CommandHandler("europe", cmd_economic))
     app.add_handler(CommandHandler("weather", cmd_weather))
     app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -89,7 +89,7 @@ def main() -> int:
     configure_logging(settings.log_level)
     log.info("Starting bot for %d authorized user(s).", len(settings.authorized_user_ids))
 
-    builder = Application.builder().token(settings.bot_token.get_secret_value())
+    builder = Application.builder().token(settings.bot_token)
     app = builder.post_init(post_init).post_shutdown(post_shutdown).build()
     app.bot_data["settings"] = settings
     register_handlers(app)

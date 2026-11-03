@@ -154,6 +154,24 @@ class CachedClient:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._network_attempts = 0
+        self._network_successes = 0
+        self._network_failures = 0
+
+    async def cache_stats(self) -> dict[str, Any]:
+        total = self._cache_hits + self._cache_misses
+        return {
+            "entries": await cache.size(),
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "hit_rate_pct": (self._cache_hits / total * 100) if total else 0.0,
+            "network_attempts": self._network_attempts,
+            "network_successes": self._network_successes,
+            "network_failures": self._network_failures,
+            "uptime_seconds": time.time() - _start_time,
+        }
 
     async def _get_client(self) -> httpx.AsyncClient:
         async with self._client_lock:
@@ -185,6 +203,9 @@ class CachedClient:
         cache_key: str | None = None,
         ttl: float = CACHE_TTL,
         parse_json: bool = True,
+        force_refresh: bool = False,
+        method: str = "GET",
+        json_body: Any = None,
     ) -> tuple[Any, Freshness]:
         """Fetch URL with caching, retries, and bounded concurrency.
 
@@ -193,10 +214,13 @@ class CachedClient:
         """
         ckey = cache_key or f"{url}:{sorted((params or {}).items())}"
 
-        # 1. Check fresh cache
-        cached = await cache.get(ckey)
-        if cached is not None:
-            return cached
+        # 1. Check fresh cache unless this request forces a refresh
+        if not force_refresh:
+            cached = await cache.get(ckey)
+            if cached is not None:
+                self._cache_hits += 1
+                return cached
+            self._cache_misses += 1
 
         # 2. Network fetch inside concurrency limit
         async with self._semaphore:
@@ -205,7 +229,14 @@ class CachedClient:
 
             for attempt in range(1 + self.max_retries):
                 try:
-                    resp = await client.get(url, params=params, headers=headers)
+                    self._network_attempts += 1
+                    resp = await client.request(
+                        method.upper(),
+                        url,
+                        params=params,
+                        json=json_body,
+                        headers=headers,
+                    )
 
                     if resp.status_code == 429:
                         retry_after = float(
@@ -224,15 +255,24 @@ class CachedClient:
 
                     # Cache successful result
                     await cache.set(ckey, data, ttl)
+                    self._network_successes += 1
                     return (data, Freshness.LIVE)
 
                 except httpx.HTTPStatusError as exc:
                     last_err = exc
                     status = exc.response.status_code
+
+                    log.error(
+                        "HTTP error details: status=%s url=%s response=%s",
+                        status,
+                        url,
+                        exc.response.text[:1000],
+                    )
+
                     if 400 <= status < 500 and status != 429:
-                        # Client error (404, 403, 401): do not retry
                         log.error("Client error %d fetching %s", status, url)
                         break
+
                     log.warning(
                         "HTTP %d fetching %s (attempt %d/%d)",
                         status,
@@ -255,7 +295,16 @@ class CachedClient:
                     delay = self.backoff_factor * (2**attempt)
                     await asyncio.sleep(delay)
 
-        # 3. All retries failed: check for stale cached fallback
+        # All network attempts failed.
+        self._network_failures += 1
+
+        # 3. All retries failed: prefer a fresh cached fallback when forced
+        if force_refresh:
+            cached = await cache.get(ckey)
+            if cached is not None:
+                return cached
+
+        # 4. Check for an expired cached fallback
         stale = await cache.get_stale(ckey)
         if stale is not None:
             value, timestamp = stale
@@ -274,15 +323,6 @@ class CachedClient:
 _client_instance: CachedClient | None = None
 
 
-def cache_stats() -> dict[str, Any]:
-    """Return basic statistics for the cache and client."""
-    return {
-        "entries": 0,  # lightweight sync summary
-        "hit_rate_pct": 100.0,
-        "uptime_seconds": time.time() - _start_time,
-    }
-
-
 def get_client(timeout: float = 15.0, max_retries: int = 2) -> CachedClient:
     global _client_instance
     if _client_instance is None:
@@ -296,6 +336,9 @@ async def fetch_json(
     headers: dict[str, str] | None = None,
     cache_key: str | None = None,
     ttl: float = CACHE_TTL,
+    force_refresh: bool = False,
+    method: str = "GET",
+    json_body: Any = None,
 ) -> tuple[Any, Freshness]:
     """Fetch JSON with caching and retries."""
     return await get_client().fetch(
@@ -305,6 +348,9 @@ async def fetch_json(
         cache_key=cache_key,
         ttl=ttl,
         parse_json=True,
+        force_refresh=force_refresh,
+        method=method,
+        json_body=json_body,
     )
 
 
